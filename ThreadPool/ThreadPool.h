@@ -76,6 +76,7 @@ private:
 		WaitTask(TaskFunc taskFunc, PVOID param,
 			TaskCallbackFunc taskCb, BOOL bLongTask)
 		{
+			printf("WaitTask()\n");
 			this->taskCb = taskCb;
 			this->taskFunc = taskFunc;
 			this->param = param;
@@ -83,6 +84,7 @@ private:
 		}
 		~WaitTask()
 		{
+			printf("~WaitTask()\n");
 			taskCb = NULL;
 			taskFunc = NULL;
 			param = NULL;
@@ -108,6 +110,9 @@ private:
 	size_t GetBusyThreadNum(); // 获取线程池中的繁忙线程数
 	void CreateIdleThread(size_t size); // 创建空闲线程
 	void DeleteIdleThread(size_t size); // 删除空闲线程
+	void DeleteIdleThreadAll(); // 删除所有空闲线程
+	void DeleteBusyThreadAll(); // 删除所有繁忙线程
+	void DeleteWaitTaskAll(); // 删除所有等待任务
 	void SetMaxNumOfThread(size_t size); // 设置线程池中的最大线程数
 	void SetMinNumOfThread(size_t size); // 设置线程池中的最小线程数
 	void MoveThreadToIdleList(Thread* busyThread); // 移入空闲列表	
@@ -116,16 +121,16 @@ private:
 	Thread* GetIdleThread(); // 获取空闲线程
 	WaitTask* GetTask(); // 从任务队列中取任务
 
+	BOOL bExit; // 是否退出
 	size_t maxNumOfThread; // 线程池中最大的线程数
 	size_t minNumOfThread; // 线程池中最小的线程数
 	size_t numOfLongTask; // 线程池中的长任务数
 	HANDLE hCompletionPort; // 完成端口
 	HANDLE hDispatchThread; // 分发任务线程
-	HANDLE hStopEvent; // 通知线程退出的事件
 	CriticalSectionLock idleThreadLock; // 空闲线程列表锁
 	list<Thread*> idleThreadList; // 空闲线程列表
 	CriticalSectionLock busyThreadLock; // 忙碌线程列表锁
 	list<Thread*> busyThreadList; // 忙碌线程列表
-	CriticalSectionLock waitTaskLock;
+	CriticalSectionLock waitTaskLock; // 任务列表锁
 	list<WaitTask*> waitTaskList; // 任务列表
 };

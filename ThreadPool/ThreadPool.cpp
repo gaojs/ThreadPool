@@ -4,8 +4,10 @@
 // 从任务列表取任务的线程函数
 unsigned int __stdcall ThreadPool::GetTaskThreadProc(PVOID pThiz)
 {
-	ThreadPool* threadPool = (ThreadPool*)pThiz;
-	while (WAIT_OBJECT_0 != WaitForSingleObject(threadPool->hStopEvent, 0))
+	printf("GetTaskThreadProc()\n");
+	ThreadPool* threadPool = (ThreadPool*)pThiz;	
+	//没有退出，则循环取任务并执行
+	while (!threadPool->bExit)
 	{
 		DWORD dwBytes = 0;
 		OVERLAPPED* pOverLapped = NULL;
@@ -15,6 +17,7 @@ unsigned int __stdcall ThreadPool::GetTaskThreadProc(PVOID pThiz)
 		// 收到退出标志
 		if (WAIT_OPERATION_TYPE::EXIT == opType)
 		{
+			printf("GetTaskThreadProc() break\n");
 			break;
 		}
 		else if (WAIT_OPERATION_TYPE::GET_TASK == opType)
@@ -22,11 +25,14 @@ unsigned int __stdcall ThreadPool::GetTaskThreadProc(PVOID pThiz)
 			threadPool->GetTaskExecute();
 		}
 	}
+	printf("_endthreadex()\n");
+	_endthreadex(0);
 	return 0;
 }
 
 ThreadPool::ThreadPool(size_t minNumOfThread, size_t maxNumOfThread)
 {
+	printf("ThreadPool()\n"); 
 	this->minNumOfThread = minNumOfThread < 2 ? 2 : minNumOfThread;
 	this->maxNumOfThread = (this->minNumOfThread * 2 > maxNumOfThread)
 		? this->minNumOfThread * 2 : maxNumOfThread;
@@ -35,19 +41,24 @@ ThreadPool::ThreadPool(size_t minNumOfThread, size_t maxNumOfThread)
 		INVALID_HANDLE_VALUE, NULL, 0, 1);
 	this->hDispatchThread = (HANDLE)_beginthreadex(0, 0,
 		GetTaskThreadProc, this, 0, 0);
-	this->hStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 	this->idleThreadList.clear();
 	this->busyThreadList.clear();
 	this->waitTaskList.clear();
+	this->bExit = FALSE;
 	CreateIdleThread(this->minNumOfThread);
 }
 
 ThreadPool::~ThreadPool()
 {
-	BOOL bRet = SetEvent(hStopEvent);
+	printf("~ThreadPool()\n");
+	this->bExit = TRUE;
+	BOOL bRet = CloseHandle(this->hDispatchThread);
 	bRet = PostQueuedCompletionStatus(hCompletionPort,
 		0, (DWORD)WAIT_OPERATION_TYPE::EXIT, NULL);
-	bRet = CloseHandle(hStopEvent);
+	bRet = CloseHandle(this->hCompletionPort);
+	this->DeleteIdleThreadAll();
+	this->DeleteBusyThreadAll();
+	this->DeleteWaitTaskAll();
 }
 
 BOOL ThreadPool::QueueTaskItem(TaskFunc task, PVOID param,
@@ -86,6 +97,45 @@ void ThreadPool::DeleteIdleThread(size_t size)
 	idleThreadLock.UnLock();
 }
 
+void ThreadPool::DeleteIdleThreadAll()
+{
+	idleThreadLock.Lock();
+	size_t t = idleThreadList.size();
+	for (size_t i = 0; i < t; i++)
+	{
+		auto thread = idleThreadList.back();
+		delete thread;
+		idleThreadList.pop_back();
+	}
+	idleThreadLock.UnLock();
+}
+
+void ThreadPool::DeleteBusyThreadAll()
+{
+	busyThreadLock.Lock();
+	size_t t = busyThreadList.size();
+	for (size_t i = 0; i < t; i++)
+	{
+		auto thread = busyThreadList.back();
+		delete thread;
+		busyThreadList.pop_back();
+	}
+	busyThreadLock.UnLock();
+}
+
+void ThreadPool::DeleteWaitTaskAll()
+{
+	waitTaskLock.Lock();
+	size_t t = waitTaskList.size();
+	for (size_t i = 0; i < t; i++)
+	{
+		auto thread = waitTaskList.back();
+		delete thread;
+		waitTaskList.pop_back();
+	}
+	waitTaskLock.UnLock();
+}
+
 ThreadPool::Thread* ThreadPool::GetIdleThread()
 {
 	Thread* thread = NULL;
@@ -109,7 +159,7 @@ ThreadPool::Thread* ThreadPool::GetIdleThread()
 	return thread;
 }
 
-void ThreadPool::MoveThreadToIdleList(ThreadPool::Thread* busyThread)
+void ThreadPool::MoveThreadToIdleList(Thread* busyThread)
 {
 	idleThreadLock.Lock();
 	idleThreadList.push_back(busyThread);
@@ -206,12 +256,14 @@ ThreadPool::Thread::Thread(ThreadPool* threadPool):
 	taskCb(NULL), taskFunc(NULL), param(0),
 	bBusy(FALSE), bExit(FALSE)
 {
+	printf("Thread()\n");
 	hThread = (HANDLE)_beginthreadex(0, 0,
 		ThreadProc, this, CREATE_SUSPENDED, 0);
 }
 
 ThreadPool::Thread::~Thread()
 {
+	printf("~Thread()\n");
 	bExit = TRUE;
 	bBusy = FALSE;
 	taskCb = NULL;
@@ -263,8 +315,9 @@ unsigned int ThreadPool::Thread::ThreadProc(PVOID pThiz)
 		WaitTask* waitTask = pThread->threadPool->GetTask();
 		if (waitTask != NULL)
 		{
-			pThread->taskFunc = waitTask->taskFunc;
 			pThread->taskCb = waitTask->taskCb;
+			pThread->taskFunc = waitTask->taskFunc;
+			pThread->param = waitTask->param;
 			delete waitTask;
 			continue;
 		}
