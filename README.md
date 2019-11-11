@@ -8,8 +8,8 @@ A ThreadPool class base on IOCP on Windows.
 
 * 其中的TaskFunc是任务函数，TaskCallbackFunc是回调函数。
 
-* 用法：定义一个ThreadPool变量，TaskFunc函数和TaskCallbackFunc回调函数，
-* * 然后调用ThreadPool的QueueTaskItem()函数即可。
+用法：定义一个ThreadPool变量，TaskFunc函数和TaskCallbackFunc回调函数，
+然后调用ThreadPool的QueueTaskItem()函数即可。
 		
 Created by TTGuoying at 2018/02/19 
 
