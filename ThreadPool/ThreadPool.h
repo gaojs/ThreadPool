@@ -4,7 +4,7 @@
 用法：定义一个ThreadPool变量，TaskFunc函数和TaskCallbackFunc回调函数，
 		然后调用ThreadPool的QueueTaskItem()函数即可。
 Created by TTGuoying at 2018/02/19 
-Revised by GaoJS,at 2019/11/11
+Revised by GaoJS at 2019/11/11
 ==========================================================================*/
 #pragma once
 #include <list>
