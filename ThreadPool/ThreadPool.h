@@ -1,11 +1,9 @@
 /*==========================================================================
-* 类ThreadPool是本代码的核心类，类中自动维护线程池的创建和任务队列的派送
-* 其中的TaskFun是任务函数
-* 其中的TaskCallbackFun是回调函数
-*用法：定义一个ThreadPool变量，TaskFun函数和TaskCallbackFun回调函数，
- 然后调用ThreadPool的QueueTaskItem()函数即可
-Author: TTGuoying
-Date: 2018/02/19 23:15
+类ThreadPool是本代码的核心类，类中自动维护线程池的创建和任务队列的派送。
+其中的TaskFunc是任务函数，TaskCallbackFunc是回调函数。
+用法：定义一个ThreadPool变量，TaskFunc函数和TaskCallbackFunc回调函数，
+		然后调用ThreadPool的QueueTaskItem()函数即可。
+Created by TTGuoying at 2018/02/19 
 Revised by GaoJS,at 2019/11/11
 ==========================================================================*/
 #pragma once
@@ -18,7 +16,7 @@ using namespace std;
 #define THRESHOLE_OF_WAIT_TASK 20
 
 typedef int(*TaskFunc)(PVOID param); // 任务函数
-typedef void(*TaskCallbackFunc)(int result); // 回调函数
+typedef void(*TaskCallbackFunc)(PVOID param, int result); // 回调函数
 
 class ThreadPool
 {
@@ -43,14 +41,14 @@ private:
 		void ExecuteTask(TaskFunc task, PVOID param,
 			TaskCallbackFunc taskCallback); // 执行任务
 		// 线程函数
-		static unsigned int __stdcall ThreadProc(PVOID pMgr);
+		static unsigned int __stdcall ThreadProc(PVOID pThiz);
 	};
 
 	//线程临界区锁
 	class CriticalSectionLock
 	{
 	private:
-		CRITICAL_SECTION cs;//临界区
+		CRITICAL_SECTION cs; //临界区
 	public:
 		CriticalSectionLock() { InitializeCriticalSection(&cs); }
 		~CriticalSectionLock() { DeleteCriticalSection(&cs); }
@@ -93,22 +91,21 @@ private:
 	};
 
 	// 从任务列表取任务的线程函数
-	static unsigned int __stdcall GetTaskThreadProc(PVOID pMgr);
+	static unsigned int __stdcall GetTaskThreadProc(PVOID pThiz);
 
 public:
 	ThreadPool(size_t minNumOfThread = 2, size_t maxNumOfThread = 10);
 	~ThreadPool();
-
 	BOOL QueueTaskItem(TaskFunc taskFunc, PVOID param,
-		TaskCallbackFunc taskCb = NULL,
-		BOOL longTask = FALSE); // 任务入队
+		TaskCallbackFunc taskCb = NULL, 
+		BOOL bLongTask = FALSE); // 任务入队
 
 private:
-	size_t GetCurNumOfThread();// 获取线程池中的当前线程数
+	size_t GetCurNumOfThread(); // 获取线程池中的当前线程数
 	size_t GetMaxNumOfThread(); // 获取线程池中的最大线程数
-	size_t GetMinNumOfThread();// 获取线程池中的最小线程数
+	size_t GetMinNumOfThread(); // 获取线程池中的最小线程数
 	size_t GetIdleThreadNum(); // 获取线程池中的空闲线程数
-	size_t GetBusyThreadNum();// 获取线程池中的繁忙线程数
+	size_t GetBusyThreadNum(); // 获取线程池中的繁忙线程数
 	void CreateIdleThread(size_t size); // 创建空闲线程
 	void DeleteIdleThread(size_t size); // 删除空闲线程
 	void SetMaxNumOfThread(size_t size); // 设置线程池中的最大线程数

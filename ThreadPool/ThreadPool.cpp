@@ -51,10 +51,10 @@ ThreadPool::~ThreadPool()
 }
 
 BOOL ThreadPool::QueueTaskItem(TaskFunc task, PVOID param,
-	TaskCallbackFunc taskCb, BOOL longFun)
+	TaskCallbackFunc taskCb, BOOL bLongTask)
 {
 	waitTaskLock.Lock();
-	WaitTask* waitTask = new WaitTask(task, param, taskCb, longFun);
+	WaitTask* waitTask = new WaitTask(task, param, taskCb, bLongTask);
 	waitTaskList.push_back(waitTask);
 	waitTaskLock.UnLock();
 	BOOL bRet = PostQueuedCompletionStatus(hCompletionPort,
@@ -258,7 +258,7 @@ unsigned int ThreadPool::Thread::ThreadProc(PVOID pThiz)
 		int result = pThread->taskFunc(pThread->param);
 		if (pThread->taskCb)
 		{
-			pThread->taskCb(result);
+			pThread->taskCb(pThread->param, result);
 		}
 		WaitTask* waitTask = pThread->threadPool->GetTask();
 		if (waitTask != NULL)
