@@ -1,44 +1,64 @@
 #include "stdafx.h"
 #include "ThreadPool.h"
-#include <process.h>
 
+// 从任务列表取任务的线程函数
+unsigned int __stdcall ThreadPool::GetTaskThreadProc(PVOID pThiz)
+{
+	ThreadPool* threadPool = (ThreadPool*)pThiz;
+	while (WAIT_OBJECT_0 != WaitForSingleObject(threadPool->hStopEvent, 0))
+	{
+		DWORD dwBytes = 0;
+		OVERLAPPED* pOverLapped = NULL;
+		WAIT_OPERATION_TYPE opType = WAIT_OPERATION_TYPE::GET_TASK;
+		BOOL bRet = GetQueuedCompletionStatus(threadPool->hCompletionPort,
+			&dwBytes, (PULONG_PTR)&opType, &pOverLapped, INFINITE);
+		// 收到退出标志
+		if (WAIT_OPERATION_TYPE::EXIT == opType)
+		{
+			break;
+		}
+		else if (WAIT_OPERATION_TYPE::GET_TASK == opType)
+		{
+			threadPool->GetTaskExecute();
+		}
+	}
+	return 0;
+}
 
 ThreadPool::ThreadPool(size_t minNumOfThread, size_t maxNumOfThread)
 {
-	if (minNumOfThread < 2)
-		this->minNumOfThread = 2;
-	else
-		this->minNumOfThread = minNumOfThread;
-	if (maxNumOfThread < this->minNumOfThread * 2)
-		this->maxNumOfThread = this->minNumOfThread * 2;
-	else
-		this->maxNumOfThread = maxNumOfThread;
-	stopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-	completionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
-
-	idleThreadList.clear();
+	this->minNumOfThread = minNumOfThread < 2 ? 2 : minNumOfThread;
+	this->maxNumOfThread = (this->minNumOfThread * 2 > maxNumOfThread)
+		? this->minNumOfThread * 2 : maxNumOfThread;
+	this->numOfLongTask = 0;
+	this->hCompletionPort = CreateIoCompletionPort(
+		INVALID_HANDLE_VALUE, NULL, 0, 1);
+	this->hDispatchThread = (HANDLE)_beginthreadex(0, 0,
+		GetTaskThreadProc, this, 0, 0);
+	this->hStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+	this->idleThreadList.clear();
+	this->busyThreadList.clear();
+	this->waitTaskList.clear();
 	CreateIdleThread(this->minNumOfThread);
-	busyThreadList.clear();
-
-	dispatchThrad = (HANDLE)_beginthreadex(0, 0, GetTaskThreadProc, this, 0, 0);
-	numOfLongFun = 0;
 }
 
 ThreadPool::~ThreadPool()
 {
-	SetEvent(stopEvent);
-	PostQueuedCompletionStatus(completionPort, 0, (DWORD)EXIT, NULL);
-
-	CloseHandle(stopEvent);
+	BOOL bRet = SetEvent(hStopEvent);
+	bRet = PostQueuedCompletionStatus(hCompletionPort,
+		0, (DWORD)WAIT_OPERATION_TYPE::EXIT, NULL);
+	bRet = CloseHandle(hStopEvent);
 }
 
-BOOL ThreadPool::QueueTaskItem(TaskFun task, PVOID param, TaskCallbackFun taskCb, BOOL longFun)
+BOOL ThreadPool::QueueTaskItem(TaskFunc task, PVOID param,
+	TaskCallbackFunc taskCb, BOOL longFun)
 {
 	waitTaskLock.Lock();
-	WaitTask *waitTask = new WaitTask(task, param, taskCb, longFun);
+	WaitTask* waitTask = new WaitTask(task, param, taskCb, longFun);
 	waitTaskList.push_back(waitTask);
 	waitTaskLock.UnLock();
-	PostQueuedCompletionStatus(completionPort, 0, (DWORD)GET_TASK, NULL);
+	BOOL bRet = PostQueuedCompletionStatus(hCompletionPort,
+		0, (DWORD)WAIT_OPERATION_TYPE::GET_TASK, NULL);
 	return TRUE;
 }
 
@@ -56,30 +76,19 @@ void ThreadPool::DeleteIdleThread(size_t size)
 {
 	idleThreadLock.Lock();
 	size_t t = idleThreadList.size();
-	if (t >= size)
+	t = (t < size) ? t : size;
+	for (size_t i = 0; i < t; i++)
 	{
-		for (size_t i = 0; i < size; i++)
-		{
-			auto thread = idleThreadList.back();
-			delete thread;
-			idleThreadList.pop_back();
-		}
-	}
-	else
-	{
-		for (size_t i = 0; i < t; i++)
-		{
-			auto thread = idleThreadList.back();
-			delete thread;
-			idleThreadList.pop_back();
-		}
+		auto thread = idleThreadList.back();
+		delete thread;
+		idleThreadList.pop_back();
 	}
 	idleThreadLock.UnLock();
 }
 
-ThreadPool::Thread *ThreadPool::GetIdleThread()
+ThreadPool::Thread* ThreadPool::GetIdleThread()
 {
-	Thread *thread = NULL;
+	Thread* thread = NULL;
 	idleThreadLock.Lock();
 	if (idleThreadList.size() > 0)
 	{
@@ -88,11 +97,10 @@ ThreadPool::Thread *ThreadPool::GetIdleThread()
 	}
 	idleThreadLock.UnLock();
 
-	if (thread == NULL && getCurNumOfThread() < maxNumOfThread)
+	if (thread == NULL && GetCurNumOfThread() < maxNumOfThread)
 	{
 		thread = new Thread(this);
 	}
-
 	if (thread == NULL && waitTaskList.size() > THRESHOLE_OF_WAIT_TASK)
 	{
 		thread = new Thread(this);
@@ -101,14 +109,15 @@ ThreadPool::Thread *ThreadPool::GetIdleThread()
 	return thread;
 }
 
-void ThreadPool::MoveBusyThreadToIdleList(Thread * busyThread)
+void ThreadPool::MoveThreadToIdleList(ThreadPool::Thread* busyThread)
 {
 	idleThreadLock.Lock();
 	idleThreadList.push_back(busyThread);
 	idleThreadLock.UnLock();
 
 	busyThreadLock.Lock();
-	for (auto it = busyThreadList.begin(); it != busyThreadList.end(); it++)
+	for (auto it = busyThreadList.begin();
+		it != busyThreadList.end(); it++)
 	{
 		if (*it == busyThread)
 		{
@@ -118,25 +127,27 @@ void ThreadPool::MoveBusyThreadToIdleList(Thread * busyThread)
 	}
 	busyThreadLock.UnLock();
 
-	if (maxNumOfThread != 0 && idleThreadList.size() > maxNumOfThread * 0.8)
+	if (maxNumOfThread != 0
+		&& idleThreadList.size() > maxNumOfThread * 0.8)
 	{
 		DeleteIdleThread(idleThreadList.size() / 2);
 	}
 
-	PostQueuedCompletionStatus(completionPort, 0, (DWORD)GET_TASK, NULL);
+	BOOL bRet = PostQueuedCompletionStatus(hCompletionPort,
+		0, (DWORD)WAIT_OPERATION_TYPE::GET_TASK, NULL);
 }
 
-void ThreadPool::MoveThreadToBusyList(Thread * thread)
+void ThreadPool::MoveThreadToBusyList(Thread* thread)
 {
 	busyThreadLock.Lock();
 	busyThreadList.push_back(thread);
 	busyThreadLock.UnLock();
 }
 
-void ThreadPool::GetTaskExcute()
+void ThreadPool::GetTaskExecute()
 {
-	Thread *thread = NULL;
-	WaitTask *waitTask = NULL;
+	Thread* thread = NULL;
+	WaitTask* waitTask = NULL;
 
 	waitTask = GetTask();
 	if (waitTask == NULL)
@@ -144,7 +155,7 @@ void ThreadPool::GetTaskExcute()
 		return;
 	}
 
-	if (waitTask->bLong)
+	if (waitTask->bLongTask)
 	{
 		if (idleThreadList.size() > minNumOfThread)
 		{
@@ -153,7 +164,7 @@ void ThreadPool::GetTaskExcute()
 		else
 		{
 			thread = new Thread(this);
-			InterlockedIncrement(&numOfLongFun);
+			InterlockedIncrement(&numOfLongTask);
 			InterlockedIncrement(&maxNumOfThread);
 		}
 	}
@@ -164,7 +175,8 @@ void ThreadPool::GetTaskExcute()
 
 	if (thread != NULL)
 	{
-		thread->ExecuteTask(waitTask->task, waitTask->param, waitTask->taskCb);
+		thread->ExecuteTask(waitTask->taskFunc,
+			waitTask->param, waitTask->taskCb);
 		delete waitTask;
 		MoveThreadToBusyList(thread);
 	}
@@ -174,12 +186,11 @@ void ThreadPool::GetTaskExcute()
 		waitTaskList.push_front(waitTask);
 		waitTaskLock.UnLock();
 	}
-	
 }
 
-ThreadPool::WaitTask *ThreadPool::GetTask()
+ThreadPool::WaitTask* ThreadPool::GetTask()
 {
-	WaitTask *waitTask = NULL;
+	ThreadPool::WaitTask* waitTask = NULL;
 	waitTaskLock.Lock();
 	if (waitTaskList.size() > 0)
 	{
@@ -190,80 +201,124 @@ ThreadPool::WaitTask *ThreadPool::GetTask()
 	return waitTask;
 }
 
-
-ThreadPool::Thread::Thread(ThreadPool *threadPool) :
-	busy(FALSE),
-	thread(INVALID_HANDLE_VALUE),
-	task(NULL),
-	taskCb(NULL),
-	exit(FALSE),
-	threadPool(threadPool)
+ThreadPool::Thread::Thread(ThreadPool* threadPool):
+	threadPool(threadPool), hThread(INVALID_HANDLE_VALUE),
+	taskCb(NULL), taskFunc(NULL), param(0),
+	bBusy(FALSE), bExit(FALSE)
 {
-	thread = (HANDLE)_beginthreadex(0, 0, ThreadProc, this, CREATE_SUSPENDED, 0);
+	hThread = (HANDLE)_beginthreadex(0, 0,
+		ThreadProc, this, CREATE_SUSPENDED, 0);
 }
 
 ThreadPool::Thread::~Thread()
 {
-	exit = TRUE;
-	task = NULL;
+	bExit = TRUE;
+	bBusy = FALSE;
 	taskCb = NULL;
-	ResumeThread(thread);
-	WaitForSingleObject(thread, INFINITE);
-	CloseHandle(thread);
+	taskFunc = NULL;
+	threadPool = NULL;
+	DWORD dwRet = ResumeThread(hThread);
+	dwRet = WaitForSingleObject(hThread, INFINITE);
+	BOOL bRet = CloseHandle(hThread);
+	hThread = NULL;
 }
 
 BOOL ThreadPool::Thread::isBusy()
 {
-	return busy;
+	return bBusy;
 }
 
-void ThreadPool::Thread::ExecuteTask(TaskFun task, PVOID param, TaskCallbackFun taskCallback)
+void ThreadPool::Thread::ExecuteTask(TaskFunc taskFunc,
+	PVOID param, TaskCallbackFunc taskCallback)
 {
-	busy = TRUE;
-	this->task = task;
-	this->param = param;
 	this->taskCb = taskCallback;
-	ResumeThread(thread);
+	this->taskFunc = taskFunc;
+	this->param = param;
+	this->bBusy = TRUE;
+	DWORD dwRet = ResumeThread(hThread);
 }
 
-unsigned int ThreadPool::Thread::ThreadProc(PVOID pM)
+unsigned int ThreadPool::Thread::ThreadProc(PVOID pThiz)
 {
-	Thread *pThread = (Thread*)pM;
-
+	Thread* pThread = (Thread*)pThiz;
 	while (true)
 	{
-		if (pThread->exit)
-			break; //线程退出
-
-		if (pThread->task == NULL && pThread->taskCb == NULL)
+		if (pThread->bExit)
 		{
-			pThread->busy = FALSE;
-			pThread->threadPool->MoveBusyThreadToIdleList(pThread);
-			SuspendThread(pThread->thread);
+			break; //线程退出
+		}
+		if (pThread->taskFunc == NULL)
+		{
+			pThread->bBusy = FALSE;
+			pThread->threadPool->MoveThreadToIdleList(pThread);
+			SuspendThread(pThread->hThread);
 			continue;
 		}
 
-		int resulst = pThread->task(pThread->param);
-		if(pThread->taskCb)
-			pThread->taskCb(resulst);
-		WaitTask *waitTask = pThread->threadPool->GetTask();
+		int result = pThread->taskFunc(pThread->param);
+		if (pThread->taskCb)
+		{
+			pThread->taskCb(result);
+		}
+		WaitTask* waitTask = pThread->threadPool->GetTask();
 		if (waitTask != NULL)
 		{
-			pThread->task = waitTask->task;
+			pThread->taskFunc = waitTask->taskFunc;
 			pThread->taskCb = waitTask->taskCb;
 			delete waitTask;
 			continue;
 		}
 		else
 		{
-			pThread->task = NULL;
-			pThread->param = NULL;
 			pThread->taskCb = NULL;
-			pThread->busy = FALSE;
-			pThread->threadPool->MoveBusyThreadToIdleList(pThread);
-			SuspendThread(pThread->thread);
+			pThread->taskFunc = NULL;
+			pThread->param = NULL;
+			pThread->bBusy = FALSE;
+			pThread->threadPool->MoveThreadToIdleList(pThread);
+			DWORD dwRet = SuspendThread(pThread->hThread);
 		}
 	}
-
 	return 0;
+}
+
+size_t ThreadPool::GetCurNumOfThread()
+{ // 获取线程池中的当前线程数
+	return GetIdleThreadNum() + GetBusyThreadNum();
+}
+
+size_t ThreadPool::GetMaxNumOfThread()
+{ // 获取线程池中的最大线程数
+	return maxNumOfThread - numOfLongTask;
+}
+
+void ThreadPool::SetMaxNumOfThread(size_t size)
+{ // 设置线程池中的最大线程数
+	if (size < numOfLongTask)
+	{
+		maxNumOfThread = size + numOfLongTask;
+	}
+	else
+	{
+		maxNumOfThread = size;
+	}
+}
+
+size_t ThreadPool::GetMinNumOfThread()
+{ // 获取线程池中的最小线程数
+	return minNumOfThread;
+}
+
+void ThreadPool::SetMinNumOfThread(size_t size)
+{ // 设置线程池中的最小线程数
+	minNumOfThread = size;
+}
+
+size_t ThreadPool::GetIdleThreadNum()
+{ // 获取线程池中的空闲线程数
+	return idleThreadList.size();
+}
+
+size_t ThreadPool::GetBusyThreadNum()
+{ // 获取线程池中的繁忙线程数
+	return busyThreadList.size();
 }
